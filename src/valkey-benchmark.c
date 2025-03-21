@@ -70,6 +70,7 @@
 #define CONFIG_LATENCY_HISTOGRAM_MAX_VALUE 3000000L         /* <= 3 secs(us precision) */
 #define CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE 3000000L /* <= 3 secs(us precision) */
 #define SHOW_THROUGHPUT_INTERVAL 250                        /* 250ms */
+#define MAX_BATCH_SIZE 1000
 
 #define CLIENT_GET_EVENTLOOP(c) (c->thread_id >= 0 ? config.threads[c->thread_id]->el : config.el)
 
@@ -112,6 +113,7 @@ static struct config {
     int csv;
     int loop;
     int idlemode;
+    int batchsize;
     sds input_dbnumstr;
     char *tests;
     int stdinarg; /* get last arg from stdin. (-x option) */
@@ -1375,6 +1377,11 @@ int parseOptions(int argc, char **argv) {
             config.csv = 1;
         } else if (!strcmp(argv[i], "-l")) {
             config.loop = 1;
+        } else if (!strcmp(argv[i], "-b")) {
+            if (lastarg) goto invalid;
+            config.batchsize = atoi(argv[++i]);
+            if (config.batchsize <= 0) config.batchsize = 1;
+            if (config.batchsize >= MAX_BATCH_SIZE) config.batchsize = 10;
         } else if (!strcmp(argv[i], "-I")) {
             config.idlemode = 1;
         } else if (!strcmp(argv[i], "-e")) {
@@ -1709,6 +1716,7 @@ int main(int argc, char **argv) {
     config.csv = 0;
     config.loop = 0;
     config.idlemode = 0;
+    config.batchsize = 10;
     config.clients = listCreate();
     config.conn_info.hostip = sdsnew("127.0.0.1");
     config.conn_info.hostport = 6379;
@@ -1991,16 +1999,31 @@ int main(int argc, char **argv) {
             free(cmd);
         }
 
-        if (test_is_selected("mset")) {
-            const char *cmd_argv[21];
+        if (test_is_selected("mget")) {
+            const char *cmd_argv[MAX_BATCH_SIZE * 2 + 1];
             cmd_argv[0] = "MSET";
+            int limit = config.batchsize + 1;
             sds key_placeholder = sdscatprintf(sdsnew(""), "key%s:__rand_int__", tag);
-            for (i = 1; i < 21; i += 2) {
+            for (i = 1; i < limit; i += 1) {
+                cmd_argv[i] = key_placeholder;
+            }
+            len = redisFormatCommandArgv(&cmd, limit, cmd_argv, NULL);
+            benchmark("MGET (many keys)", cmd, len);
+            free(cmd);
+            sdsfree(key_placeholder);
+        }
+
+        if (test_is_selected("mset")) {
+            const char *cmd_argv[MAX_BATCH_SIZE * 2 + 1];
+            cmd_argv[0] = "MSET";
+            int limit = 2 * config.batchsize + 1;
+            sds key_placeholder = sdscatprintf(sdsnew(""), "key%s:__rand_int__", tag);
+            for (i = 1; i < limit; i += 2) {
                 cmd_argv[i] = key_placeholder;
                 cmd_argv[i + 1] = data;
             }
-            len = redisFormatCommandArgv(&cmd, 21, cmd_argv, NULL);
-            benchmark("MSET (10 keys)", cmd, len);
+            len = redisFormatCommandArgv(&cmd, limit, cmd_argv, NULL);
+            benchmark("MSET (many keys)", cmd, len);
             free(cmd);
             sdsfree(key_placeholder);
         }
